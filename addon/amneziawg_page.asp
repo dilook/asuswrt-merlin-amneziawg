@@ -4199,10 +4199,8 @@ function awgDiagMarkOf(txt){
 }
 // Is the dump we just read OURS rather than the one that was already there? The per-run token
 // settles it; the full-text comparison additionally covers a backend still writing the legacy
-// bare marker (a page updated ahead of the script, mid-upgrade). With no baseline — the pre-read
-// failed — fall back to a time floor, since do_diag takes seconds to walk the whole box.
-function awgDiagIsFresh(mark, txt, elapsed){
-    if(!awgDiagPrev) return elapsed > 5000;
+// bare marker (a page updated ahead of the script, mid-upgrade).
+function awgDiagIsFresh(mark, txt){
     return mark !== awgDiagPrev.mark || String(txt || '') !== awgDiagPrev.text;
 }
 function awgRunDiag(btn){
@@ -4229,6 +4227,18 @@ function awgRunDiag(btn){
     pre.send();
 }
 function awgDiagSubmit(btn){
+    // Re-check the lock HERE. awgRunDiag checked it up to 4s ago, before the pre-read, and a
+    // save can start inside that window — every other document.form submitter on this page
+    // refuses while one is in flight, and until the pre-read was introduced this check and the
+    // submit sat in the same synchronous block. Submitting into the shared hidden_frame
+    // mid-save either loses our event or makes the save's load handler fire on our response
+    // and report a phantom "discarded".
+    if(awgFormBusy()){
+        if(btn){ btn.disabled = false; if(btn._dlbl != null){ btn.value = btn._dlbl; btn._dlbl = null; } }
+        awgCloseDiag();
+        awgFormBusyRefuse();
+        return;
+    }
     // Diag carries NO settings, so clear the hidden field rather than re-posting the page-load
     // snapshot (1.5.13). It used to do a "no-op save", which is not a no-op at all: the firmware
     // writes the whole object back, reverting anything changed since this page loaded (the
@@ -4245,7 +4255,14 @@ function awgDiagSubmit(btn){
         x.onload = function(){
             var txt = x.responseText || '';
             var mark = awgDiagMarkOf(txt);
-            if(mark !== null && awgDiagIsFresh(mark, txt, Date.now() - t0)){ awgDiagFinish(btn, txt, false); return; }
+            // The pre-read failed, so we have no baseline. This first poll lands milliseconds
+            // after submit — long before do_diag can have published anything — so what it sees
+            // IS the previous dump: seed from it instead of guessing with a timer. A timer
+            // would hand over that very dump if the event got dropped (notify_rc does drop
+            // events while rc_service is busy with one of ours), which is the bug this release
+            // is named after.
+            if(!awgDiagPrev){ awgDiagPrev = { mark: mark, text: txt }; setTimeout(tick, 1500); return; }
+            if(mark !== null && awgDiagIsFresh(mark, txt)){ awgDiagFinish(btn, txt, false); return; }
             // Out of time. Never hand over the previous run's dump as if it were this one —
             // that is the whole bug. Show the timeout instead and let the user retry.
             if(Date.now() - t0 > 45000){

@@ -8633,11 +8633,30 @@ do_service_event(){
             # helpers), so the token is unique per run even within one second. Sweep leftovers
             # from a run killed mid-dump first; the glob needs the dot+digits so it can never
             # match the published file itself.
-            rm -f "${DIAG_FILE}".[0-9]* 2>/dev/null
+            # Sweep leftovers from a run killed mid-dump — but NEVER a temp another diag is
+            # still filling: a blanket `rm "${DIAG_FILE}".[0-9]*` would unlink the live temp of
+            # a slow run (the page gives up after 45s and the user clicks again), which then
+            # writes on into a deleted inode and fails to publish. The suffix IS the writer's
+            # pid, so /proc settles it without forking anything.
+            for _dold in "${DIAG_FILE}".[0-9]*; do
+                [ -e "$_dold" ] || continue
+                _dpid=${_dold##*.}
+                [ -d "/proc/$_dpid" ] && continue
+                rm -f "$_dold" 2>/dev/null
+            done
             _dtmp="${DIAG_FILE}.$$"
             do_diag 2>&1 | sed 's/<\([%#]\)/< \1/g' > "$_dtmp"
+            # Tokenized marker FIRST so the current page reads the token (its regex takes the
+            # first match), then a bare one so a browser tab still running pre-1.5.27 JS — which
+            # looks for the literal "[DIAG_DONE]" — does not hang until its 45s timeout. An
+            # in-place update leaves exactly such a cached tab open.
             echo "[DIAG_DONE $(date +%s)-$$]" >> "$_dtmp"
-            mv "$_dtmp" "$DIAG_FILE" 2>/dev/null || rm -f "$_dtmp" 2>/dev/null
+            echo "[DIAG_DONE]" >> "$_dtmp"
+            # A failed publish must not look like a dropped event in the journal.
+            mv "$_dtmp" "$DIAG_FILE" 2>/dev/null || {
+                log_msg "ERROR: diag dump collected but could not be published to $DIAG_FILE"
+                rm -f "$_dtmp" 2>/dev/null
+            }
             ;;
         awganalyzestart) do_analyze_start ;;
         awganalyzestop)  do_analyze_stop ;;
