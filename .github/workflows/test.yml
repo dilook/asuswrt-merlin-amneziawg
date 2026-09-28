@@ -32,13 +32,19 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Pinned rather than relying on whatever the runner image ships, consistent with how
       # carefully release.yml pins everything else.
-      - uses: actions/setup-node@v4
+      #
+      # Both actions are @v5, not @v4: v4 declares the node20 runtime, which the runners now
+      # warn about ("Node.js 20 is deprecated ... forced to run on Node.js 24"). v5 declares
+      # node24 and the warning goes away. NB release.yml still carries checkout@v4 and
+      # upload-artifact@v4 and logs the same warning — deliberately not touched from a tests
+      # PR, since that file is the release path.
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
 
       # busybox ash is the shell the router actually runs, so it is the parser whose verdict
       # matters most; dash is the closest always-available stand-in. tests/run.sh turns a
