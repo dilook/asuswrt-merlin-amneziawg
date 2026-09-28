@@ -4188,11 +4188,47 @@ function awgCopyText(text, done){
 // modal. The modal's "Copy diagnostic data" copies the diagnostics PLUS the
 // current log, wrapped for Telegram — the copy happens inside the click, so it's reliable.
 var awgDiagText = '';
+// The dump already published on the router when we asked for a new one: {mark, text}, or null
+// when it could not be read. The freshness test below is relative to THIS, never absolute.
+var awgDiagPrev = null;
+// Completion marker payload of a dump: the token for "[DIAG_DONE <tok>]", "" for a legacy bare
+// marker, null when the dump carries no marker at all (never run, or still being written).
+function awgDiagMarkOf(txt){
+    var m = /\[DIAG_DONE([^\]]*)\]/.exec(String(txt || ''));
+    return m ? m[1] : null;
+}
+// Is the dump we just read OURS rather than the one that was already there? The per-run token
+// settles it; the full-text comparison additionally covers a backend still writing the legacy
+// bare marker (a page updated ahead of the script, mid-upgrade). With no baseline — the pre-read
+// failed — fall back to a time floor, since do_diag takes seconds to walk the whole box.
+function awgDiagIsFresh(mark, txt, elapsed){
+    if(!awgDiagPrev) return elapsed > 5000;
+    return mark !== awgDiagPrev.mark || String(txt || '') !== awgDiagPrev.text;
+}
 function awgRunDiag(btn){
     if(awgFormBusy()){ awgFormBusyRefuse(); return; }
     if(btn){ if(btn._dlbl == null) btn._dlbl = btn.value; btn.value = T('DIAG_COLLECTING'); btn.disabled = true; }
     awgDiagText = '';
     awgOpenDiag(T('DIAG_COLLECTING_WAIT'));
+    // Read what is already published BEFORE asking for a new dump. Polling for a bare
+    // [DIAG_DONE] used to match the PREVIOUS run's finished file on the very first poll —
+    // milliseconds after submit, before the backend had even started — and the modal then showed
+    // a stale dump as if it were current (field 2026-09-28: a report fetched on Sep 28 carried a
+    // Sep 23 body; only the first dump after a reboot was ever honest, because /www/user is
+    // cleared then and every later run re-served the first one).
+    awgDiagPrev = null;
+    var pre = new XMLHttpRequest();
+    pre.open('GET', '/user/awg_diag.htm?_=' + Date.now(), true);
+    pre.timeout = 4000;
+    pre.onload = function(){
+        var t = String(pre.responseText || '');
+        awgDiagPrev = { mark: awgDiagMarkOf(t), text: t };
+        awgDiagSubmit(btn);
+    };
+    pre.onerror = pre.ontimeout = function(){ awgDiagPrev = null; awgDiagSubmit(btn); };
+    pre.send();
+}
+function awgDiagSubmit(btn){
     // Diag carries NO settings, so clear the hidden field rather than re-posting the page-load
     // snapshot (1.5.13). It used to do a "no-op save", which is not a no-op at all: the firmware
     // writes the whole object back, reverting anything changed since this page loaded (the
@@ -4208,8 +4244,15 @@ function awgRunDiag(btn){
         x.timeout = 4000;
         x.onload = function(){
             var txt = x.responseText || '';
-            if(txt.indexOf('[DIAG_DONE]') !== -1){ awgDiagFinish(btn, txt, false); return; }
-            if(Date.now() - t0 > 45000){ awgDiagFinish(btn, txt, true); return; }
+            var mark = awgDiagMarkOf(txt);
+            if(mark !== null && awgDiagIsFresh(mark, txt, Date.now() - t0)){ awgDiagFinish(btn, txt, false); return; }
+            // Out of time. Never hand over the previous run's dump as if it were this one —
+            // that is the whole bug. Show the timeout instead and let the user retry.
+            if(Date.now() - t0 > 45000){
+                var stale = awgDiagPrev && String(txt) === awgDiagPrev.text;
+                awgDiagFinish(btn, stale ? null : txt, true);
+                return;
+            }
             setTimeout(tick, 1500);
         };
         x.onerror = x.ontimeout = function(){
@@ -4221,7 +4264,7 @@ function awgRunDiag(btn){
 }
 function awgDiagFinish(btn, txt, timedOut){
     if(btn){ btn.disabled = false; if(btn._dlbl != null){ btn.value = btn._dlbl; btn._dlbl = null; } }
-    var report = String(txt || '').replace(/\[DIAG_DONE\]/g, '').replace(/\s+$/, '');
+    var report = String(txt || '').replace(/\[DIAG_DONE[^\]]*\]/g, '').replace(/\s+$/, '');
     awgDiagText = report;
     var body = document.getElementById('awg_diag_body');
     if(body){
@@ -4954,7 +4997,7 @@ function awgRefreshLog(){
         if(x.status !== 200 || !x.responseText) return;
         var box = document.getElementById('awg_log');
         if(!box) return;
-        var lines = x.responseText.replace(/\[DIAG_DONE\]/g, '').replace(/\s+$/, '').split(/\r?\n/);
+        var lines = x.responseText.replace(/\[DIAG_DONE[^\]]*\]/g, '').replace(/\s+$/, '').split(/\r?\n/);
         if(lines.length > 80) lines = lines.slice(-80);
         var atBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) < 30;
         box.textContent = awgDecodePct(lines.join('\n'));

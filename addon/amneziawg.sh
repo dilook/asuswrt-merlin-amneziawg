@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.26"
+AWG_VERSION="1.5.27"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -8612,12 +8612,32 @@ do_service_event(){
             ;;
         awgdiag)
             # Diagnostic dump into a SEPARATE file — does NOT touch the on-page log. The UI
-            # shows it in a modal and can copy it together with the log. The [DIAG_DONE] marker
-            # tells the UI the (possibly multi-second) dump has finished. Filtered as a STREAM at
+            # shows it in a modal and can copy it together with the log. The [DIAG_DONE <token>]
+            # marker tells the UI the (possibly multi-second) dump has finished, and WHICH run
+            # finished — see the token note below. Filtered as a STREAM at
             # this, its one web-served writer: the dump quotes syslog, dnsmasq output and user
             # settings, and an ASP-tag opener in a /www/user .htm livelocks httpd (see log_msg).
-            do_diag 2>&1 | sed 's/<\([%#]\)/< \1/g' > "$DIAG_FILE"
-            echo "[DIAG_DONE]" >> "$DIAG_FILE"
+            # Per-run TOKEN in the marker + an atomic publish (1.5.27). A BARE [DIAG_DONE] is
+            # identical between runs, and the UI polls this same path: the PREVIOUS run's
+            # finished file answered the very first poll — milliseconds after the event was
+            # submitted, long before this handler had produced anything — so the user got an
+            # old dump believing it was current. Field 2026-09-28: a report downloaded as
+            # "...-20260928-220746" carried a body dated Sep 23; only the first dump of each
+            # boot was honest, because /www/user is cleared on reboot and every later run just
+            # re-served the first one. Diagnosing from a five-day-old dump costs real time.
+            #
+            # Build into a temp and rename: the published file is then ALWAYS a complete dump
+            # (either the previous one or this one), so a poll can never catch a half-written
+            # body, and the token tells the UI which run it is looking at. $$ is this script's
+            # own pid here (the dispatch, not a detached subshell — see the $$ note in the lock
+            # helpers), so the token is unique per run even within one second. Sweep leftovers
+            # from a run killed mid-dump first; the glob needs the dot+digits so it can never
+            # match the published file itself.
+            rm -f "${DIAG_FILE}".[0-9]* 2>/dev/null
+            _dtmp="${DIAG_FILE}.$$"
+            do_diag 2>&1 | sed 's/<\([%#]\)/< \1/g' > "$_dtmp"
+            echo "[DIAG_DONE $(date +%s)-$$]" >> "$_dtmp"
+            mv "$_dtmp" "$DIAG_FILE" 2>/dev/null || rm -f "$_dtmp" 2>/dev/null
             ;;
         awganalyzestart) do_analyze_start ;;
         awganalyzestop)  do_analyze_stop ;;
